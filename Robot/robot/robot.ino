@@ -1,5 +1,5 @@
 #include "Arduino_LED_Matrix.h"
-#include "/home/keaw/github/IOT-Robot/Robot/animation/animation.h"
+#include "animation.h"
 #include "Servo.h"
 
 Servo servo;
@@ -246,13 +246,14 @@ void loadFlippedXYFrame(const uint32_t frame[4]) {
 void loop() {
   // put your main code here, to run repeatedly:
   int d_time = 1000;
-
+  /*
   Sv(180);
   Sv(90);
   Sv(45);
   Sv(0);
   Sv(90);
-  /*
+  */
+  
   forward();
   delay(1000);
   backward();
@@ -267,6 +268,6 @@ void loop() {
   delay(1000);
   stop();
   delay(1000);
-  */
+  
   
 }
