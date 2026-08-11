@@ -1,4 +1,4 @@
- const int ledPin[4] = {9,10,11,12};
+ const int ledPin[5] = {9,10,11,12,13};
  const int button[2] = {2,3};
  int i=0;
 void setup() {
@@ -6,7 +6,7 @@ void setup() {
   for(int i= 0;i<2;i++){
     pinMode(button[i], INPUT);
   } 
-  for(int i=0;i<4;i++){
+  for(int i=0;i<5;i++){
     pinMode(ledPin[i], OUTPUT);
   }
 }
@@ -30,13 +30,16 @@ void loop() {
       led_blink_binary(decimal >> 1 & 1,ledPin[1]);
       led_blink_binary(decimal >> 2 & 1,ledPin[2]);
       led_blink_binary(decimal >> 3 & 1,ledPin[3]);
-
+      digitalWrite(ledPin[4], LOW);
       i++;
-      delay(1000);
+      delay(100);
     while(i >15 && button1 ==0 ){
       
       button1 = digitalRead(button[0]);
       Serial.println("I no longer than 15");
+      
+      digitalWrite(ledPin[4], HIGH);
+      
       
       delay(100);
       
@@ -54,14 +57,15 @@ void loop() {
       led_blink_binary(decimal >> 1 & 1,ledPin[1]);
       led_blink_binary(decimal >> 2 & 1,ledPin[2]);
       led_blink_binary(decimal >> 3 & 1,ledPin[3]);
-
+      digitalWrite(ledPin[4], LOW);
       i--;
-      delay(1000);  
+      delay(100);  
       while(i <= 0 && button2 ==0 ){
         
         button2 = digitalRead(button[1]);
         Serial.println("I no less than 0");
         
+        digitalWrite(ledPin[4], HIGH);
         delay(100);
       
       }
@@ -81,6 +85,7 @@ void deadled(int button){
   if(button == 1){
     for(int i=0;i<4;i++){
       digitalWrite(ledPin[i], LOW);
+      delay(100);
     }
   }
 }
