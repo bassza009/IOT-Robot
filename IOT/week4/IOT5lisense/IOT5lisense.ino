@@ -6,7 +6,7 @@ void setup() {
  // 3.3v -> resistor -> arduino <- switch -> GD
  
  // pull down resistor
-// 3.3 v -> switch -> arduino ->resistor -> GD
+// 3.3 v -> switch <- arduino ->resistor -> GD
 
   Serial.begin(9600);
   pinMode(17,INPUT);
