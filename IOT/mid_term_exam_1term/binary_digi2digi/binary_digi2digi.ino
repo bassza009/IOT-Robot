@@ -26,10 +26,10 @@ void loop() {
       Serial.print("I : ");
       Serial.println(i);
 
-      led_blink_binary(decimal >> 0 & 1,ledPin[0]); // >> mean point to array of binary 
-      led_blink_binary(decimal >> 1 & 1,ledPin[1]);
-      led_blink_binary(decimal >> 2 & 1,ledPin[2]);
-      led_blink_binary(decimal >> 3 & 1,ledPin[3]);
+      for(int j = 0;j<4;j++){
+        led_blink_binary(decimal >> j & 1,ledPin[j]);  
+      }
+      
       digitalWrite(ledPin[4], LOW);
       i++;
       delay(100);
@@ -53,10 +53,9 @@ void loop() {
       Serial.print("I : ");
       Serial.println(i);
 
-      led_blink_binary(decimal >> 0 & 1,ledPin[0]); // >> mean point to array of binary 
-      led_blink_binary(decimal >> 1 & 1,ledPin[1]);
-      led_blink_binary(decimal >> 2 & 1,ledPin[2]);
-      led_blink_binary(decimal >> 3 & 1,ledPin[3]);
+      for(int j = 0;j<4;j++){
+        led_blink_binary(decimal >> j & 1,ledPin[j]);  
+      }
       digitalWrite(ledPin[4], LOW);
       i--;
       delay(100);  
@@ -81,11 +80,4 @@ void led_blink_binary(int n,int pin){
 }
 
 
-void deadled(int button){
-  if(button == 1){
-    for(int i=0;i<4;i++){
-      digitalWrite(ledPin[i], LOW);
-      delay(100);
-    }
-  }
-}
+
