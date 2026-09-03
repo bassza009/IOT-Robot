@@ -38,19 +38,21 @@ const float WHEEL_CIRCUMFERENCE_CM = 3.14159265 * WHEEL_DIAMETER_CM; // ~20.42 c
 const float CM_PER_PULSE = WHEEL_CIRCUMFERENCE_CM / DISK_SLOTS;      // ~1.021 cm per pulse
 
 // ============================================================================
-// SPEED & BALANCE CONFIGURATION (ปรับจูนความเร็วและสมดุลตรงนี้ที่เดียว!)
+// 16-BIT SPEED & BALANCE CONFIGURATION (analogWriteResolution = 16-bit: 0 - 65535)
 // ============================================================================
-int RUN_SPEED = 245;   // ความเร็ววิ่งตรง (245 มี Headroom ±10 ให้มอเตอร์เร่งแซงดึงกลับมาตรงได้)
-int TURN_SPEED = 180;  // ความเร็วตอนหมุนเลี้ยว (0 - 255, แนะนำ 180 ไม่สะบัดเกินไป)
+int RUN_SPEED = 60500;   // ความเร็ววิ่งตรง 16-bit จุดสมดุลธรรมชาติล้อซ้าย (เหลือ Headroom ถึง 65535 ให้เร่งแซงได้)
+int TURN_SPEED = 65535;  // ความเร็วตอนหมุนเลี้ยว 16-bit สูงสุดเต็มพิกัด 100% (ป้องกันมอเตอร์กระตุกเวลาหมุนบนพื้น)
 int BRAKE_REVERSE_MS = 35; // สวนกระแสมอเตอร์เพื่อหยุดแรงเฉื่อยสะบัดทันที (ms)
 int BRAKE_HOLD_MS = 150;   // ล็อกล้อด้วยระบบ Dynamic Brake (ms)
 
-// Motor Balance Tuning (ระบบ Closed-loop ควบคุมมอเตอร์ซ้าย-ขวาถูกต้องตรงตัว)
-float MOTOR_L_RATIO = 1.0;  // ฐานเท่ากัน 1:1 ปล่อยให้ Closed-loop คุมล้อให้เสมอกัน
-float ENC_TRIM_L = 1.0;
-float Kp_enc = 2.0;         // ความไวตอบสนองทันที (Proportional)
-float Ki_enc = 0.04;        // สะสมแรงดึงส่วนต่างให้เข้าหา 0 พัลส์เป๊ะ (Integral)
-float Kp_gyro = 3.5;        // Proportional gain for gyroscope heading lock
+// Motor Balance Tuning 16-bit (จุด Sweet Spot ชดเชยพอดีที่ 1.5% ไม่กินซ้าย)
+float MOTOR_L_RATIO = 1.0;   // ล้อซ้ายรับไฟฐาน 60,500 PWM
+float MOTOR_R_RATIO = 0.970; // ไฟออกตัวล้อขวาสมดุลพอดี (~58,685 PWM)
+float ENC_TRIM_L = 1.015;    // ชดเชยล้อขวา +1.5% (จุดกึ่งกลางที่สมบูรณ์แบบ วิ่งตรงกลางเป๊ะ)
+float TURN_DEG_SCALE = (360.0 / 270.0) * (360.0 / 402.5); // สเกลเทียบตามผลวัดจริง 402.5° (= 1.19255) หมุน 360 ได้ 360° เป๊ะ!
+float Kp_enc = 750.0;        // ความไวตอบสนองทันที
+float Ki_enc = 14.0;         // สะสมแรงดึงส่วนต่างให้คงที่ 0 พัลส์เป๊ะ
+float Kp_gyro = 900.0;       // Proportional gain for gyroscope (3.5 x 256)
 
 // ============================================================================
 // 3. ENCODER COUNTERS & ISRs
@@ -226,8 +228,8 @@ void brake(int duration_ms = 150) {
   digitalWrite(IN2, 1);
   digitalWrite(IN3, 1);
   digitalWrite(IN4, 1);
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, 65535);
+  analogWrite(ENB, 65535);
   if (duration_ms > 0) {
     delay(duration_ms);
   }
@@ -256,7 +258,7 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
   digitalWrite(IN4, 1);
 
   int base_L = (int)((speed_motorL - B_R) * MOTOR_L_RATIO);
-  int base_R = speed_motorR - B_L;
+  int base_R = (int)((speed_motorR - B_L) * MOTOR_R_RATIO);
 
   // Instant Launch: Apply full power simultaneously from millisecond 0!
   applyMotorSpeeds(base_L, base_R);
@@ -267,8 +269,8 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
     for (int i = 0; i < total_frames; i++) {
       updateYaw();
       long error = has_mpu ? (long)(current_yaw * 5.0) : ((long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R);
-      int adjustment = constrain((int)(Kp_enc * error), -60, 60);
-      applyMotorSpeeds(constrain(base_L - adjustment, 90, 255), constrain(base_R + adjustment, 90, 255));
+      int adjustment = constrain((int)(Kp_enc * error), -18000, 18000);
+      applyMotorSpeeds(constrain(base_L - adjustment, 23000, 65535), constrain(base_R + adjustment, 23000, 65535));
       loadFlippedYFrame(walk[i]);
       delay(walk[i][3]);
     }
@@ -294,14 +296,16 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
     int adjustment;
     if (has_mpu) {
       error = (long)(current_yaw * 5.0); // Heading error in tenths of degrees
-      adjustment = constrain((int)(Kp_gyro * current_yaw), -60, 60);
+      adjustment = constrain((int)(Kp_gyro * current_yaw), -18000, 18000);
     } else {
       error = (long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R;
-      integral_error = constrain(integral_error + error, -300, 300);
-      adjustment = constrain((int)(Kp_enc * error + Ki_enc * integral_error), -70, 70);
+      integral_error = constrain(integral_error + error, -800, 800);
+      adjustment = constrain((int)(Kp_enc * error + Ki_enc * integral_error), -18000, 18000);
     }
 
-    applyMotorSpeeds(constrain(base_L - adjustment, 90, 255), constrain(base_R + adjustment, 90, 255));
+    int current_L = constrain(base_L - adjustment, 23000, 65535);
+    int current_R = constrain(base_R + adjustment, 23000, 65535);
+    applyMotorSpeeds(current_L, current_R);
 
     // LED Matrix Animation
     if (millis() - last_anim_time >= walk[anim_frame][3]) {
@@ -318,7 +322,8 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
 
     // Telemetry print every 300 ms (Outputs to both USB Serial and Bluetooth BLE)
     if (millis() - last_print_time >= 300) {
-      String t = "[Forward] Dist: " + String(current_avg * CM_PER_PULSE, 1) + " / " + String(distance_cm, 0) + " cm | L: " + String(pulse_count_L) + " | R: " + String(pulse_count_R);
+      //String t = "[Forward] Dist: " + String(current_avg * CM_PER_PULSE, 1) + " / " + String(distance_cm, 0) + " cm | L: " + String(pulse_count_L) + " | R: " + String(pulse_count_R) + " | PWM: " + String(current_L) + "/" + String(current_R);
+      String t = " L: " + String(pulse_count_L) + " | R: " + String(pulse_count_R) + " | PWM: " + String(current_L) + "/" + String(current_R);
       sendTelemetry(t);
       last_print_time = millis();
     }
@@ -348,7 +353,7 @@ void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, floa
   digitalWrite(IN4, 0);
 
   int base_L = (int)((speed_motorL - B_R) * MOTOR_L_RATIO);
-  int base_R = speed_motorR - B_L;
+  int base_R = (int)((speed_motorR - B_L) * MOTOR_R_RATIO);
 
   applyMotorSpeeds(base_L, base_R);
 
@@ -357,8 +362,8 @@ void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, floa
     for (int i = 0; i < total_frames; i++) {
       updateYaw();
       long error = has_mpu ? (long)(current_yaw * 5.0) : ((long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R);
-      int adjustment = constrain((int)(Kp_enc * error), -60, 60);
-      applyMotorSpeeds(constrain(base_L - adjustment, 90, 255), constrain(base_R + adjustment, 90, 255));
+      int adjustment = constrain((int)(Kp_enc * error), -18000, 18000);
+      applyMotorSpeeds(constrain(base_L - adjustment, 23000, 65535), constrain(base_R + adjustment, 23000, 65535));
       loadFlippedXFrame(walk[i]);
       delay(walk[i][3]);
     }
@@ -369,8 +374,8 @@ void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, floa
   while ((pulse_count_L + pulse_count_R) / 2 < target_pulses) {
     updateYaw();
     long error = has_mpu ? (long)(current_yaw * 5.0) : ((long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R);
-    int adjustment = constrain((int)(Kp_enc * error), -60, 60);
-    applyMotorSpeeds(constrain(base_L - adjustment, 90, 255), constrain(base_R + adjustment, 90, 255));
+    int adjustment = constrain((int)(Kp_enc * error), -18000, 18000);
+    applyMotorSpeeds(constrain(base_L - adjustment, 23000, 65535), constrain(base_R + adjustment, 23000, 65535));
     delay(10);
   }
   brake(100);
@@ -394,7 +399,7 @@ void turn_right(float target_deg = 90.0, int speed = -1) {
   digitalWrite(IN3, 1);
   digitalWrite(IN4, 0);
 
-  applyMotorSpeeds((int)(speed * MOTOR_L_RATIO), speed);
+  applyMotorSpeeds(speed, speed); // จ่ายไฟเต็มพิกัดสูงสุด 65535 ทั้งสองล้อ ไม่กระตุก
 
   if (has_mpu) {
     // Gyroscope mode: wait until yaw angle reaches target
@@ -404,8 +409,8 @@ void turn_right(float target_deg = 90.0, int speed = -1) {
       delay(2);
     }
   } else {
-    // Encoder fallback: calculate arc distance per wheel
-    long target_pulses = (long)((target_deg / 360.0) * (3.14159265 * TRACK_WIDTH_CM / CM_PER_PULSE));
+    // Encoder fallback: calculate arc distance per wheel (คูณ TURN_DEG_SCALE ชดเชยแรงหนืดล้ออิสระที่ล็อกไว้)
+    long target_pulses = (long)(((target_deg * TURN_DEG_SCALE) / 360.0) * (3.14159265 * TRACK_WIDTH_CM / CM_PER_PULSE));
     while ((pulse_count_L + pulse_count_R) / 2 < target_pulses) {
       delay(2);
     }
@@ -417,12 +422,13 @@ void turn_right(float target_deg = 90.0, int speed = -1) {
   digitalWrite(IN2, 0);
   digitalWrite(IN3, 0);
   digitalWrite(IN4, 1);
-  applyMotorSpeeds((int)(speed * MOTOR_L_RATIO), speed);
+  applyMotorSpeeds(speed, speed);
   delay(BRAKE_REVERSE_MS);
 
   // 2. ล็อกล้อด้วยระบบ Dynamic Brake (ชอร์ตขั้วมอเตอร์ตรึงล้อให้อยู่นิ่งสนิท)
   brake(BRAKE_HOLD_MS);
   stop();
+  sendTelemetry("[Turn Right] Target: " + String(target_deg, 1) + " deg | Pulses: " + String((pulse_count_L + pulse_count_R) / 2));
   delay(100); // Settle pause
 }
 
@@ -433,12 +439,12 @@ void turn_left(float target_deg = 90.0, int speed = -1) {
   resetYaw();
 
   // Left backward, Right forward
-  digitalWrite(IN1, 1);
-  digitalWrite(IN2, 0);
-  digitalWrite(IN3, 0);
-  digitalWrite(IN4, 1);
+  digitalWrite(IN1, 0);
+  digitalWrite(IN2, 1);
+  digitalWrite(IN3, 1);
+  digitalWrite(IN4, 0);
 
-  applyMotorSpeeds((int)(speed * MOTOR_L_RATIO), speed);
+  applyMotorSpeeds(speed, speed); // จ่ายไฟเต็มพิกัดสูงสุด 65535 ทั้งสองล้อ ไม่กระตุก
 
   if (has_mpu) {
     while (true) {
@@ -447,7 +453,8 @@ void turn_left(float target_deg = 90.0, int speed = -1) {
       delay(2);
     }
   } else {
-    long target_pulses = (long)((target_deg / 360.0) * (3.14159265 * TRACK_WIDTH_CM / CM_PER_PULSE));
+    // Encoder fallback: calculate arc distance per wheel (คูณ TURN_DEG_SCALE ชดเชยแรงหนืดล้ออิสระที่ล็อกไว้)
+    long target_pulses = (long)(((target_deg * TURN_DEG_SCALE) / 360.0) * (3.14159265 * TRACK_WIDTH_CM / CM_PER_PULSE));
     while ((pulse_count_L + pulse_count_R) / 2 < target_pulses) {
       delay(2);
     }
@@ -455,16 +462,17 @@ void turn_left(float target_deg = 90.0, int speed = -1) {
 
   // --- ACTIVE BRAKE & LOCK WHEELS ---
   // 1. สวนกระแสมอเตอร์สั้นๆ (Counter-torque) เพื่อหยุดแรงเฉื่อยการหมุนทันที
-  digitalWrite(IN1, 0);
-  digitalWrite(IN2, 1);
-  digitalWrite(IN3, 1);
-  digitalWrite(IN4, 0);
-  applyMotorSpeeds((int)(speed * MOTOR_L_RATIO), speed);
+  digitalWrite(IN1, 1);
+  digitalWrite(IN2, 0);
+  digitalWrite(IN3, 0);
+  digitalWrite(IN4, 1);
+  applyMotorSpeeds(speed, speed);
   delay(BRAKE_REVERSE_MS);
 
   // 2. ล็อกล้อด้วยระบบ Dynamic Brake
   brake(BRAKE_HOLD_MS);
   stop();
+  sendTelemetry("[Turn Left] Target: " + String(target_deg, 1) + " deg | Pulses: " + String((pulse_count_L + pulse_count_R) / 2));
   delay(100);
 }
 
@@ -523,7 +531,8 @@ void setup() {
 
   matrix.begin();
 
-  // Motor pins
+  // Motor pins & 16-bit PWM Resolution (0 - 65535)
+  analogWriteResolution(16);
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -571,45 +580,65 @@ bool mission_completed = false;
 void loop() {
   if (!mission_completed) {
     Serial.println("Place robot at Start Line. Race starting in 3 seconds...");
-    delay(3000); // 3-second delay for positioning
-
+    delay(1000); // 1-second delay for positioning
+    
     // ========================================================================
     // ตัวอย่างการวิ่งกรอบสี่เหลี่ยม 4 จุด (450 cm x 540 cm วนขวา)
     // คุณสามารถปรับแต่งขั้นตอนตามที่ต้องการได้เลยครับ:
     // ========================================================================
+    
+    forward(350.0);
+    
+    turn_right(450);
+    
+    forward(23000,65000,205);
+    forward(205);
 
-    // จุดที่ 1: วิ่งตรง 450 cm (ใช้ความเร็ว RUN_SPEED อัตโนมัติ)
+    turn_left(270);
+
+    forward(350.0);
+    
+    turn_right(450);
+    
+    forward(23000,65000,205);
+    forward(205);
+
+    turn_left(270);    
+    /*
+    
+    // จุดที่ 1: วิ่งตรง 450 cm
     Serial.println("Leg 1: Forward 450 cm");
-    forward(450.0);
+    forward(200, 200, 0, 0, 350.0);
 
     // เลี้ยวขวา 90 องศา
     Serial.println("Turn Right 90 deg");
-    turn_right(90.0);
+    turn_right(420.0);
 
     // จุดที่ 2: วิ่งตรง 540 cm
     Serial.println("Leg 2: Forward 540 cm");
-    forward(540.0);
+    forward(200, 200, 0, 0, 420.0);
 
     // เลี้ยวขวา 90 องศา
     Serial.println("Turn Right 90 deg");
-    turn_right(90.0);
+    turn_right(420.0);
 
     // จุดที่ 3: วิ่งตรง 450 cm
     Serial.println("Leg 3: Forward 450 cm");
-    forward(450.0);
+    forward(200, 200, 0, 0, 390.0);
 
     // เลี้ยวขวา 90 องศา
     Serial.println("Turn Right 90 deg");
-    turn_right(90.0);
+    turn_right(420.0);
 
     // จุดที่ 4: วิ่งตรง 540 cm กลับจุดเริ่มต้น
     Serial.println("Leg 4: Forward 540 cm");
-    forward(540.0);
+    forward(200, 200, 0, 0, 420.0);
 
     // เลี้ยวขวา 90 องศา สู่ทิศเริ่มต้น
     Serial.println("Turn Right 90 deg (Finish)");
-    turn_right(90.0);
-
+    turn_right(420.0);
+    */
+    
     stop();
     mission_completed = true;
     Serial.println("=== Course Completed! Press RESET to run again. ===");

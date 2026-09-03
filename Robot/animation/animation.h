@@ -1,3 +1,5 @@
+#pragma once
+
 const uint32_t side_walk[][4] = {
 	{
 		0x400,
