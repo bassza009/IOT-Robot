@@ -1,0 +1,424 @@
+#pragma once
+
+#include <stdint.h>
+#include <math.h>
+
+// Hardware-independent controller. Times are milliseconds; PWM is signed 16-bit
+// magnitude (positive = forward). Sensor order is physical left -> right.
+namespace linebot {
+
+static const int SENSOR_COUNT = 5;
+
+struct Config {
+  // MANUAL sensor readings, 12-bit ADC (0..4095), physical left -> right:
+  //                          A5    A4    A3    A2    A1
+  // Reported RAW: wood ~3700, black 500..670; use 600 as the black reference.
+  // Shared starting values; replace individual channels if readings differ.
+  int woodRaw[SENSOR_COUNT] = {3700, 3700, 3700, 3700, 3700};
+  int blackRaw[SENSOR_COUNT] = {600, 600, 600, 600, 600};
+  // Black may be higher OR lower than wood, independently on each channel.
+  uint32_t countdownMs = 5000;
+  int lineThreshold = 450;             // Normalized: wood=0, black=1000
+  int cruisePwm = 42000;
+  int curvePwm = 34000;
+  int turnPwm = 40000;
+  int reversePwm = 30000;
+  float rightTrim = 46800.0f / 55500.0f; // Preserve the last tested wheel balance
+  float steeringKp = 14000.0f;         // PWM per sensor spacing of error
+  float steeringKd = 180.0f;          // PWM per spacing/second
+  float accelerationPwmPerSec = 12000.0f;
+  uint32_t straightStableMs = 300;
+  uint32_t lineStableMs = 60;
+  uint32_t lossConfirmMs = 20;
+  uint32_t brakeMs = 80;
+  uint32_t turnTimeoutMs = 1800;
+  uint32_t reverseTimeoutMs = 650;
+  uint32_t recoveryTimeoutMs = 3500;
+  uint32_t controlGapMs = 150;
+  // These encoder distances bound a LOCAL maneuver, never the lap length.
+  float cmPerPulse = 3.14159265f * 6.5f / 20.0f;
+  float cornerAdvanceCm = 4.5f;        // Sensor row ~6 cm ahead of drive axle
+  uint32_t cornerAdvanceTimeoutMs = 250;
+  float reverseMaxCm = 10.0f;
+};
+
+enum class State {
+  Countdown, WaitForLine,
+  Follow, CornerAdvance, Turn, RecoveryBrake, Reverse, AlignBrake, Align,
+  Stopped, Fault
+};
+
+enum class Reason {
+  None, BleStop, SerialStop, InvalidSensorConfig, LineNotFound,
+  ControlOverrun, BleUnavailable
+};
+
+struct Drive {
+  int left = 0;
+  int right = 0;
+  bool brake = false; // true: dynamically brake wheels whose command is zero
+};
+
+struct Observation {
+  bool visible = false;
+  bool ambiguous = false;
+  bool centered = false;
+  int corner = 0; // -1 left, +1 right; a contiguous center-to-outer pattern
+  uint8_t mask = 0;
+  float position = 0.0f; // -2 = far left, +2 = far right
+};
+
+inline float clampFloat(float value, float lo, float hi) {
+  return value < lo ? lo : (value > hi ? hi : value);
+}
+
+class Controller {
+ public:
+  explicit Controller(const Config& config = Config()) : cfg(config) {}
+
+  void begin(uint32_t now) {
+    state_ = State::Countdown;
+    reason_ = Reason::None;
+    stateSince = lastTick = now;
+    drive_ = Drive();
+    obs = Observation();
+    stable = straight = missing = recoveryActive = false;
+    lastPosition = lastError = derivative = 0;
+    basePwm = float(cfg.curvePwm);
+    turnDirection = 0;
+    for (int i = 0; i < SENSOR_COUNT; ++i) {
+      strength_[i] = 0;
+      if (cfg.woodRaw[i] < 0 || cfg.woodRaw[i] > 4095 ||
+          cfg.blackRaw[i] < 0 || cfg.blackRaw[i] > 4095 ||
+          cfg.woodRaw[i] == cfg.blackRaw[i]) {
+        fault(Reason::InvalidSensorConfig);
+      }
+    }
+    if (cfg.lineThreshold < 1 || cfg.lineThreshold > 1000)
+      fault(Reason::InvalidSensorConfig);
+  }
+
+  // Give a full countdown after peripheral setup, preserving any early STOP.
+  void startCountdown(uint32_t now) {
+    if (state_ != State::Countdown) return;
+    enter(State::Countdown, now);
+    lastTick = now;
+  }
+
+  // Latched: no serial/BLE command or sensor sample can restart a stopped run.
+  // Only begin(), called by setup() after a physical reset, clears the latch.
+  void stop(Reason why) {
+    if (state_ == State::Stopped || state_ == State::Fault) return;
+    state_ = State::Stopped;
+    reason_ = why;
+    drive_ = Drive();
+    drive_.brake = true;
+  }
+
+  void fault(Reason why) {
+    stop(why);
+    state_ = State::Fault;
+  }
+
+  State state() const { return state_; }
+  Reason reason() const { return reason_; }
+  Drive drive() const { return drive_; }
+  Observation observation() const { return obs; }
+  int wood(int i) const { return cfg.woodRaw[i]; }
+  int black(int i) const { return cfg.blackRaw[i]; }
+  int strength(int i) const { return strength_[i]; }
+
+  static bool isMoving(State s) {
+    return s == State::Follow || s == State::CornerAdvance || s == State::Turn ||
+           s == State::Reverse || s == State::Align;
+  }
+
+  void tick(uint32_t now, const int raw[SENSOR_COUNT], uint32_t encL, uint32_t encR) {
+    if (state_ == State::Stopped || state_ == State::Fault) return;
+    uint32_t elapsed = now - lastTick;
+    lastTick = now;
+    if (isMoving(state_) && elapsed > cfg.controlGapMs) {
+      fault(Reason::ControlOverrun);
+      return;
+    }
+    float dt = clampFloat(elapsed / 1000.0f, 0.001f, 0.05f);
+    drive_ = Drive();
+
+    obs = observe(raw);
+    bool centeredStable = held(obs.centered && !obs.ambiguous, now,
+                               cfg.lineStableMs, stable, stableSince);
+    if (recoveryActive && now - recoverySince >= cfg.recoveryTimeoutMs) {
+      fault(Reason::LineNotFound);
+      return;
+    }
+
+    switch (state_) {
+      case State::Countdown:
+        drive_.brake = true;
+        if (now - stateSince >= cfg.countdownMs) {
+          if (centeredStable) enterFollow(now);
+          else enter(State::WaitForLine, now);
+        }
+        break;
+
+      case State::WaitForLine:
+        // Allow manual placement; give a NEW full countdown once centered.
+        if (centeredStable) enter(State::Countdown, now);
+        break;
+
+      case State::Follow:
+        if (!obs.visible || obs.ambiguous) {
+          drive_.brake = true;
+          if (held(true, now, cfg.lossConfirmMs, missing, missingSince)) {
+            startRecovery(now);
+          }
+          break;
+        }
+        missing = false;
+        lastPosition = obs.position;
+        if (obs.corner != 0) {
+          turnDirection = obs.corner;
+          startEncL = encL;
+          startEncR = encR;
+          enter(State::CornerAdvance, now);
+          command(cfg.curvePwm, cfg.curvePwm);
+          break;
+        }
+        if (fabsf(obs.position) >= 1.65f) {
+          turnDirection = obs.position < 0 ? -1 : 1;
+          enter(State::Turn, now);
+          pivot();
+          break;
+        }
+        follow(now, dt);
+        break;
+
+      case State::CornerAdvance:
+        // Bring the drive axle toward the corner before rotating. The sensor
+        // row is ahead of it; spinning at the first edge would cut the corner.
+        command(cfg.curvePwm, cfg.curvePwm);
+        if (obs.ambiguous) {
+          startRecovery(now);
+        } else if (distance(encL, encR) >= cfg.cornerAdvanceCm ||
+                   now - stateSince >= cfg.cornerAdvanceTimeoutMs) {
+          enter(State::Turn, now);
+          pivot();
+        }
+        break;
+
+      case State::Turn:
+        if (obs.ambiguous || now - stateSince >= cfg.turnTimeoutMs) {
+          startRecovery(now);
+        } else if (centeredStable) {
+          enterFollow(now);
+        } else if (obs.centered) {
+          drive_.brake = true; // Confirm the line without rotating past it.
+        } else {
+          pivot();
+        }
+        break;
+
+      case State::RecoveryBrake:
+        drive_.brake = true;
+        if (now - stateSince >= cfg.brakeMs) {
+          startEncL = encL;
+          startEncR = encR;
+          enter(State::Reverse, now);
+        }
+        break;
+
+      case State::Reverse:
+        if (obs.visible && !obs.ambiguous) {
+          turnDirection = obs.position < -0.15f ? -1 :
+                          (obs.position > 0.15f ? 1 : turnDirection);
+          enter(State::AlignBrake, now);
+          drive_.brake = true;
+        } else if (now - stateSince >= cfg.reverseTimeoutMs ||
+                   distance(encL, encR) >= cfg.reverseMaxCm) {
+          fault(Reason::LineNotFound);
+        } else {
+          command(-cfg.reversePwm, -cfg.reversePwm);
+        }
+        break;
+
+      case State::AlignBrake:
+        drive_.brake = true;
+        if (now - stateSince >= cfg.brakeMs) enter(State::Align, now);
+        break;
+
+      case State::Align:
+        if (centeredStable) {
+          enterFollow(now);
+        } else if (obs.ambiguous || now - stateSince >= cfg.turnTimeoutMs) {
+          fault(Reason::LineNotFound);
+        } else if (obs.centered) {
+          drive_.brake = true;
+        } else {
+          if (obs.visible && fabsf(obs.position) > 0.15f)
+            turnDirection = obs.position < 0 ? -1 : 1;
+          if (turnDirection == 0) {
+            // No evidence of a direction: do not pick a neighboring line.
+            drive_.brake = true;
+          } else {
+            pivot();
+          }
+        }
+        break;
+
+      default: break;
+    }
+  }
+
+ private:
+  Config cfg;
+  State state_ = State::Countdown;
+  Reason reason_ = Reason::None;
+  Drive drive_;
+  Observation obs;
+  uint32_t stateSince = 0, lastTick = 0;
+  int strength_[SENSOR_COUNT] = {};
+  bool stable = false, straight = false, missing = false, recoveryActive = false;
+  uint32_t stableSince = 0, straightSince = 0, missingSince = 0, recoverySince = 0;
+  uint32_t startEncL = 0, startEncR = 0;
+  float lastPosition = 0, lastError = 0, derivative = 0, basePwm = 0;
+  int turnDirection = 0;
+
+  static bool held(bool condition, uint32_t now, uint32_t duration,
+                   bool& active, uint32_t& since) {
+    if (!condition) { active = false; return false; }
+    if (!active) { active = true; since = now; }
+    return now - since >= duration;
+  }
+
+  void enter(State next, uint32_t now) {
+    state_ = next;
+    stateSince = now;
+    stable = straight = missing = false;
+  }
+
+  void enterFollow(uint32_t now) {
+    enter(State::Follow, now);
+    recoveryActive = false;
+    lastPosition = lastError = obs.position;
+    derivative = 0;
+    basePwm = float(cfg.curvePwm);
+    drive_.brake = true; // One stationary tick before applying forward PWM.
+  }
+
+  void startRecovery(uint32_t now) {
+    if (!recoveryActive) { recoveryActive = true; recoverySince = now; }
+    if (fabsf(lastPosition) > 0.15f) turnDirection = lastPosition < 0 ? -1 : 1;
+    enter(State::RecoveryBrake, now);
+    drive_ = Drive();
+    drive_.brake = true;
+  }
+
+  void command(int left, int right) {
+    drive_.left = int(clampFloat(float(left), -65535.0f, 65535.0f));
+    drive_.right = int(clampFloat(float(right) * cfg.rightTrim, -65535.0f, 65535.0f));
+    drive_.brake = true;
+  }
+
+  void pivot() {
+    // Negative error: line is LEFT -> left wheel reverses, right advances.
+    // Center rotation reduces the forward sweep toward an adjacent line.
+    if (turnDirection < 0) command(-cfg.turnPwm, cfg.turnPwm);
+    else command(cfg.turnPwm, -cfg.turnPwm);
+  }
+
+  float distance(uint32_t encL, uint32_t encR) const {
+    // Single-channel encoders count rotation magnitude, including reversing.
+    return (float(uint32_t(encL - startEncL)) + float(uint32_t(encR - startEncR))) *
+           0.5f * cfg.cmPerPulse;
+  }
+
+  Observation observe(const int raw[SENSOR_COUNT]) {
+    Observation result;
+    struct Group { int first, last, weight; float position; } groups[SENSOR_COUNT];
+    int count = 0;
+    for (int i = 0; i < SENSOR_COUNT; ++i) {
+      int span = cfg.blackRaw[i] - cfg.woodRaw[i];
+      strength_[i] = int(clampFloat(1000.0f * (raw[i] - cfg.woodRaw[i]) / span, 0, 1000));
+      if (strength_[i] < cfg.lineThreshold) continue;
+      result.mask |= uint8_t(1U << i);
+      if (count == 0 || groups[count - 1].last != i - 1) {
+        groups[count].first = i;
+        groups[count].last = i;
+        groups[count].weight = 0;
+        groups[count].position = 0;
+        ++count;
+      }
+      Group& g = groups[count - 1];
+      g.last = i;
+      g.weight += strength_[i];
+      g.position += float(i - 2) * strength_[i];
+    }
+    if (count == 0) return result;
+    int best = 0;
+    float bestDistance = 100, secondDistance = 100;
+    for (int i = 0; i < count; ++i) {
+      groups[i].position /= groups[i].weight;
+      float d = fabsf(groups[i].position - lastPosition);
+      if (d < bestDistance) { secondDistance = bestDistance; bestDistance = d; best = i; }
+      else if (d < secondDistance) secondDistance = d;
+    }
+    // Never average separated black lines into a fictitious center position.
+    if ((count > 1 && secondDistance - bestDistance < 0.6f) || result.mask == 0x1f) {
+      result.ambiguous = true;
+      return result;
+    }
+    const Group& g = groups[best];
+    result.visible = true;
+    result.position = g.position;
+    result.centered = g.first <= 2 && g.last >= 2 && fabsf(g.position) <= 0.45f;
+    if (g.first == 0 && g.last == 2) result.corner = -1;
+    if (g.first == 2 && g.last == 4) result.corner = 1;
+    return result;
+  }
+
+  void follow(uint32_t now, float dt) {
+    bool fast = held(fabsf(obs.position) < 0.35f, now, cfg.straightStableMs,
+                     straight, straightSince);
+    float target = float(fast ? cfg.cruisePwm : cfg.curvePwm);
+    if (basePwm > target) basePwm = target;
+    else basePwm = clampFloat(basePwm + cfg.accelerationPwmPerSec * dt, 0, target);
+    float rate = clampFloat((obs.position - lastError) / dt, -40, 40);
+    derivative += 0.25f * (rate - derivative);
+    float correction = cfg.steeringKp * obs.position + cfg.steeringKd * derivative;
+    lastError = obs.position;
+    command(int(clampFloat(basePwm + correction, 0, 65535)),
+            int(clampFloat(basePwm - correction, 0, 65535)));
+  }
+};
+
+inline const char* stateName(State state) {
+  switch (state) {
+    case State::Countdown: return "COUNTDOWN";
+    case State::WaitForLine: return "PLACE_ON_LINE";
+    case State::Follow: return "FOLLOW";
+    case State::CornerAdvance: return "CORNER_ADVANCE";
+    case State::Turn: return "TURN";
+    case State::RecoveryBrake: return "RECOVERY_BRAKE";
+    case State::Reverse: return "REVERSE";
+    case State::AlignBrake: return "ALIGN_BRAKE";
+    case State::Align: return "ALIGN";
+    case State::Stopped: return "STOPPED";
+    case State::Fault: return "FAULT";
+  }
+  return "UNKNOWN";
+}
+
+inline const char* reasonName(Reason reason) {
+  switch (reason) {
+    case Reason::None: return "NONE";
+    case Reason::BleStop: return "BLE_STOP";
+    case Reason::SerialStop: return "SERIAL_STOP";
+    case Reason::InvalidSensorConfig: return "INVALID_SENSOR_CONFIG";
+    case Reason::LineNotFound: return "LINE_NOT_FOUND";
+    case Reason::ControlOverrun: return "CONTROL_OVERRUN";
+    case Reason::BleUnavailable: return "BLE_UNAVAILABLE";
+  }
+  return "UNKNOWN";
+}
+
+} // namespace linebot

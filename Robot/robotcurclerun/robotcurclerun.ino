@@ -7,27 +7,50 @@
 // ============================================================================
 // 1. HARDWARE PIN DEFINITIONS
 // ============================================================================
-// Left Motor (L298N)
-const int ENA = 10;
-const int IN1 = 9;
-const int IN2 = 8;
+// ============================================================================
+// 1. PIN CONFIGURATION (ยืนยันผลทดสอบฮาร์ดแวร์จริง 100%)
+// ============================================================================
+// Right Motor (L298N Channel A)
+const int ENA = 10; // มอเตอร์ขวา (PWM ขา 10)
+const int IN1 = 8;  // ทิศทางล้อขวา 1 9
+const int IN2 = 9;  // ทิศทางล้อขวา 2 8
 
-// Right Motor (L298N)
-const int ENB = 5;
-const int IN3 = 7;
-const int IN4 = 6;
+// Left Motor (L298N Channel B)
+const int ENB = 5;  // มอเตอร์ซ้าย (PWM ขา 5)
+const int IN3 = 6;  // ทิศทางล้อซ้าย 1 7
+const int IN4 = 7;  // ทิศทางล้อซ้าย 2 6
 
 // Servo
 const int SV = 12;
 
-// LM393 Speed Encoders (สลับขาตามที่ตรวจพบ)
-const int ENCODER_L = 3;  // สลับขา 3 มาเป็นล้อซ้าย
-const int ENCODER_R = 11; // สลับขา 11 มาเป็นล้อขวา
+// LM393 Speed Encoders
+const int ENCODER_L = 3;  // เซนเซอร์นับพัลส์ล้อซ้าย (ขา 3)
+const int ENCODER_R = 11; // เซนเซอร์นับพัลส์ล้อขวา (ขา 11)
 
 // Objects
 Servo servo;
 ArduinoLEDMatrix matrix;
+/*this code ทำให้รถวิ่งตรง
+// ============================================================================
+// 16-BIT SPEED & BALANCE CONFIGURATION (analogWriteResolution = 16-bit: 0 - 65535)
+// ============================================================================
+int RUN_SPEED = 60500;   // ความเร็ววิ่งตรง 16-bit จุดสมดุลธรรมชาติล้อซ้าย (เหลือ Headroom ถึง 65535 ให้เร่งแซงได้)
+int TURN_SPEED = 65535;  // ความเร็วตอนหมุนเลี้ยว 16-bit สูงสุดเต็มพิกัด 100% (ป้องกันมอเตอร์กระตุกเวลาหมุนบนพื้น)
+int BRAKE_REVERSE_MS = 35; // สวนกระแสมอเตอร์เพื่อหยุดแรงเฉื่อยสะบัดทันที (ms)
+int BRAKE_HOLD_MS = 150;   // ล็อกล้อด้วยระบบ Dynamic Brake (ms)
 
+// Motor Balance Tuning 16-bit
+float MOTOR_L_RATIO = 3.0;   // ตัวคูณ PWM ฐานล้อซ้าย (ENA) — ลดค่านี้ = ล้อซ้ายช้าลง
+float MOTOR_R_RATIO = 0.995; // ตัวคูณ PWM ฐานล้อขวา (ENB) — ลดค่านี้ = ล้อขวาช้าลง
+                              // bisect: 1.0 เบี้ยวขวา, 0.85 เบี้ยวซ้ายเกิน -> 0.925 อยู่กึ่งกลาง
+float ENC_TRIM_L = 1.0;      // ตัวคูณค่า pulse ซ้ายก่อนเข้าสูตร error (ไม่กระทบ PWM จริง แค่การอ่านค่า)
+float TURN_DEG_SCALE = (360.0 / 180.0) * (360.0 / 202.5); // ตัวชดเชยมุมหมุน/เลี้ยว — เพิ่ม/ลดถ้ามุมจริงขาด/เกิน
+float Kp_enc = 750.0;        // ความไวของ loop แก้สมดุลล้อ (จาก encoder) — สูง=ตอบสนองไว แต่ส่ายง่าย
+float Ki_enc = 14.0;         // ตัวสะสม error ระยะยาว (จาก encoder) — แก้อาการเบี้ยวสะสมเป็นเส้นโค้ง
+float Kp_gyro = 900.0;       // ความไวของ loop แก้สมดุล (จาก gyro, ใช้เมื่อ USE_MPU6050 = true)
+
+
+*/
 // ============================================================================
 // 2. ROBOT PHYSICAL GEOMETRY & CALIBRATION
 // ============================================================================
@@ -38,21 +61,16 @@ const float WHEEL_CIRCUMFERENCE_CM = 3.14159265 * WHEEL_DIAMETER_CM; // ~20.42 c
 const float CM_PER_PULSE = WHEEL_CIRCUMFERENCE_CM / DISK_SLOTS;      // ~1.021 cm per pulse
 
 // ============================================================================
-// 16-BIT SPEED & BALANCE CONFIGURATION (analogWriteResolution = 16-bit: 0 - 65535)
+// MANUAL FIXED SPEED CONFIGURATION (16-bit PWM: 0 - 65535)
+// ปิดระบบเพิ่มอัตโนมัติ 100% - ผู้ใช้ปรับจูนความเร็วมอเตอร์คงที่แยกซ้าย-ขวาได้โดยตรง
 // ============================================================================
-int RUN_SPEED = 60500;   // ความเร็ววิ่งตรง 16-bit จุดสมดุลธรรมชาติล้อซ้าย (เหลือ Headroom ถึง 65535 ให้เร่งแซงได้)
-int TURN_SPEED = 65535;  // ความเร็วตอนหมุนเลี้ยว 16-bit สูงสุดเต็มพิกัด 100% (ป้องกันมอเตอร์กระตุกเวลาหมุนบนพื้น)
+int SPEED_L = 52000;   // ความเร็วมอเตอร์ซ้าย (ENB ขา 5) - ถ้าออกขวาให้ลดลง, ถ้าออกซ้ายให้เพิ่มขึ้น
+int SPEED_R = 52000;   // ความเร็วมอเตอร์ขวา (ENA ขา 10)
+int RUN_SPEED = 52000; // ความเร็วอ้างอิงทั่วไป
+int TURN_SPEED = 65535;  // ความเร็วตอนหมุนเลี้ยว 16-bit สูงสุดเต็มพิกัด 100%
 int BRAKE_REVERSE_MS = 35; // สวนกระแสมอเตอร์เพื่อหยุดแรงเฉื่อยสะบัดทันที (ms)
 int BRAKE_HOLD_MS = 150;   // ล็อกล้อด้วยระบบ Dynamic Brake (ms)
-
-// Motor Balance Tuning 16-bit (จุด Sweet Spot ชดเชยพอดีที่ 1.5% ไม่กินซ้าย)
-float MOTOR_L_RATIO = 1.0;   // ล้อซ้ายรับไฟฐาน 60,500 PWM
-float MOTOR_R_RATIO = 0.970; // ไฟออกตัวล้อขวาสมดุลพอดี (~58,685 PWM)
-float ENC_TRIM_L = 1.015;    // ชดเชยล้อขวา +1.5% (จุดกึ่งกลางที่สมบูรณ์แบบ วิ่งตรงกลางเป๊ะ)
-float TURN_DEG_SCALE = (360.0 / 270.0) * (360.0 / 402.5); // สเกลเทียบตามผลวัดจริง 402.5° (= 1.19255) หมุน 360 ได้ 360° เป๊ะ!
-float Kp_enc = 750.0;        // ความไวตอบสนองทันที
-float Ki_enc = 14.0;         // สะสมแรงดึงส่วนต่างให้คงที่ 0 พัลส์เป๊ะ
-float Kp_gyro = 900.0;       // Proportional gain for gyroscope (3.5 x 256)
+float TURN_DEG_SCALE = (360.0 / 270.0) * (360.0 / 402.5); // สเกลเทียบตามผลวัดจริง 402.5° (= 1.19255)
 
 // ============================================================================
 // 3. ENCODER COUNTERS & ISRs
@@ -236,18 +254,18 @@ void brake(int duration_ms = 150) {
 }
 
 // Simultaneous Motor Power Application
-// ข้อเท็จจริงของฮาร์ดแวร์: ENB (ขา 5) คือมอเตอร์ซ้าย, ENA (ขา 10) คือมอเตอร์ขวา
+// แมปสายที่พิสูจน์แล้วว่า Route 1 วิ่งตรง 327/327:
 void applyMotorSpeeds(int current_L, int current_R) {
-  analogWrite(ENB, current_L); // ส่งไฟ current_L เข้ามอเตอร์ซ้ายจริง (ENB ขา 5)
-  analogWrite(ENA, current_R); // ส่งไฟ current_R เข้ามอเตอร์ขวาจริง (ENA ขา 10)
+  analogWrite(ENB, current_L); // ENB = current_L
+  analogWrite(ENA, current_R); // ENA = current_R
 }
 
 // ============================================================================
 // 6. HIGH-SPEED NAVIGATION APIs
 // ============================================================================
 
-// Forward by distance with Instant Launch & Heading Lock
-void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float distance_cm = 0) {
+// Forward by distance with direct fixed motor speeds (ปิดระบบปรับเพิ่มอัตโนมัติ วิ่งตรงตามค่า PWM คงที่)
+void forward(int speed_motorL, int speed_motorR, float distance_cm = 0) {
   resetEncoders();
   resetYaw();
 
@@ -257,20 +275,13 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
   digitalWrite(IN3, 0);
   digitalWrite(IN4, 1);
 
-  int base_L = (int)((speed_motorL - B_R) * MOTOR_L_RATIO);
-  int base_R = (int)((speed_motorR - B_L) * MOTOR_R_RATIO);
-
-  // Instant Launch: Apply full power simultaneously from millisecond 0!
-  applyMotorSpeeds(base_L, base_R);
+  // Apply fixed speeds directly (ไม่มีการปรับเพิ่ม/ลดอัตโนมัติ)
+  applyMotorSpeeds(speed_motorL, speed_motorR);
 
   // If distance is 0 or not specified, run one single animation cycle (default mode)
   if (distance_cm <= 0) {
     int total_frames = sizeof(walk) / sizeof(walk[0]);
     for (int i = 0; i < total_frames; i++) {
-      updateYaw();
-      long error = has_mpu ? (long)(current_yaw * 5.0) : ((long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R);
-      int adjustment = constrain((int)(Kp_enc * error), -18000, 18000);
-      applyMotorSpeeds(constrain(base_L - adjustment, 23000, 65535), constrain(base_R + adjustment, 23000, 65535));
       loadFlippedYFrame(walk[i]);
       delay(walk[i][3]);
     }
@@ -283,29 +294,15 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
   int anim_frame = 0;
   unsigned long last_anim_time = millis();
   unsigned long last_print_time = millis();
-  long integral_error = 0;
+
+  sendTelemetry("[Forward] Fixed Speed - L: " + String(speed_motorL) + " | R: " + String(speed_motorR) + " | Target: " + String(distance_cm, 1) + " cm (" + String(target_pulses) + " pulses)");
 
   while (true) {
     long current_avg = (pulse_count_L + pulse_count_R) / 2;
     if (current_avg >= target_pulses) break;
 
-    updateYaw();
-
-    // Closed-loop Heading Lock: Gyro (Yaw) if available, otherwise Encoders
-    long error;
-    int adjustment;
-    if (has_mpu) {
-      error = (long)(current_yaw * 5.0); // Heading error in tenths of degrees
-      adjustment = constrain((int)(Kp_gyro * current_yaw), -18000, 18000);
-    } else {
-      error = (long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R;
-      integral_error = constrain(integral_error + error, -800, 800);
-      adjustment = constrain((int)(Kp_enc * error + Ki_enc * integral_error), -18000, 18000);
-    }
-
-    int current_L = constrain(base_L - adjustment, 23000, 65535);
-    int current_R = constrain(base_R + adjustment, 23000, 65535);
-    applyMotorSpeeds(current_L, current_R);
+    // Fixed speeds: คุมความเร็วนิ่งสนิท ไม่มีการดึงสวิงไปมา
+    applyMotorSpeeds(speed_motorL, speed_motorR);
 
     // LED Matrix Animation
     if (millis() - last_anim_time >= walk[anim_frame][3]) {
@@ -320,10 +317,9 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
       break;
     }
 
-    // Telemetry print every 300 ms (Outputs to both USB Serial and Bluetooth BLE)
-    if (millis() - last_print_time >= 300) {
-      //String t = "[Forward] Dist: " + String(current_avg * CM_PER_PULSE, 1) + " / " + String(distance_cm, 0) + " cm | L: " + String(pulse_count_L) + " | R: " + String(pulse_count_R) + " | PWM: " + String(current_L) + "/" + String(current_R);
-      String t = " L: " + String(pulse_count_L) + " | R: " + String(pulse_count_R) + " | PWM: " + String(current_L) + "/" + String(current_R);
+    // Telemetry print every 200 ms (แสดงค่าพัลส์ให้เห็นชัดเจนสำหรับปรับแต่งความเร็ว)
+    if (millis() - last_print_time >= 200) {
+      String t = " L: " + String(pulse_count_L) + " | R: " + String(pulse_count_R) + " | PWM: " + String(speed_motorL) + "/" + String(speed_motorR);
       sendTelemetry(t);
       last_print_time = millis();
     }
@@ -337,13 +333,18 @@ void forward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float
   delay(50); // Settle
 }
 
-// ฟังก์ชันเรียกใช้งานง่าย: ใส่แค่ระยะทาง (cm) ระบบใช้ความเร็ว RUN_SPEED อัตโนมัติ
-void forward(float distance_cm = 0) {
-  forward(RUN_SPEED, RUN_SPEED, 0, 0, distance_cm);
+// Overload: กำหนดความเร็วแยกอิสระ (speed_motorL - B_L, speed_motorR - B_R, distance_cm)
+void forward(int speed_motorL, int speed_motorR, int B_L, int B_R, float distance_cm = 0) {
+  forward(speed_motorL - B_L, speed_motorR - B_R, distance_cm);
 }
 
-// Backward by distance
-void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, float distance_cm = 0) {
+// ฟังก์ชันเรียกใช้งานง่าย: ใส่แค่ระยะทาง (cm) ระบบใช้ความเร็ว SPEED_L และ SPEED_R คงที่อัตโนมัติ
+void forward(float distance_cm = 0) {
+  forward(SPEED_L, SPEED_R, distance_cm);
+}
+
+// Backward by distance with direct fixed motor speeds
+void backward(int speed_motorL, int speed_motorR, float distance_cm = 0) {
   resetEncoders();
   resetYaw();
 
@@ -352,18 +353,11 @@ void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, floa
   digitalWrite(IN3, 1);
   digitalWrite(IN4, 0);
 
-  int base_L = (int)((speed_motorL - B_R) * MOTOR_L_RATIO);
-  int base_R = (int)((speed_motorR - B_L) * MOTOR_R_RATIO);
-
-  applyMotorSpeeds(base_L, base_R);
+  applyMotorSpeeds(speed_motorL, speed_motorR);
 
   if (distance_cm <= 0) {
     int total_frames = sizeof(walk) / sizeof(walk[0]);
     for (int i = 0; i < total_frames; i++) {
-      updateYaw();
-      long error = has_mpu ? (long)(current_yaw * 5.0) : ((long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R);
-      int adjustment = constrain((int)(Kp_enc * error), -18000, 18000);
-      applyMotorSpeeds(constrain(base_L - adjustment, 23000, 65535), constrain(base_R + adjustment, 23000, 65535));
       loadFlippedXFrame(walk[i]);
       delay(walk[i][3]);
     }
@@ -372,10 +366,7 @@ void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, floa
 
   long target_pulses = (long)(distance_cm / CM_PER_PULSE);
   while ((pulse_count_L + pulse_count_R) / 2 < target_pulses) {
-    updateYaw();
-    long error = has_mpu ? (long)(current_yaw * 5.0) : ((long)(pulse_count_L * ENC_TRIM_L) - (long)pulse_count_R);
-    int adjustment = constrain((int)(Kp_enc * error), -18000, 18000);
-    applyMotorSpeeds(constrain(base_L - adjustment, 23000, 65535), constrain(base_R + adjustment, 23000, 65535));
+    applyMotorSpeeds(speed_motorL, speed_motorR);
     delay(10);
   }
   brake(100);
@@ -383,8 +374,12 @@ void backward(int speed_motorL, int speed_motorR, int B_L = 0, int B_R = 0, floa
   delay(50);
 }
 
+void backward(int speed_motorL, int speed_motorR, int B_L, int B_R, float distance_cm = 0) {
+  backward(speed_motorL - B_L, speed_motorR - B_R, distance_cm);
+}
+
 void backward(float distance_cm = 0) {
-  backward(RUN_SPEED, RUN_SPEED, 0, 0, distance_cm);
+  backward(SPEED_L, SPEED_R, distance_cm);
 }
 
 // Pivot Turn Right by exact degrees (e.g. 90.0)
@@ -393,11 +388,11 @@ void turn_right(float target_deg = 90.0, int speed = -1) {
   resetEncoders();
   resetYaw();
 
-  // Left forward, Right backward
-  digitalWrite(IN1, 0);
-  digitalWrite(IN2, 1);
-  digitalWrite(IN3, 1);
-  digitalWrite(IN4, 0);
+  // หมุนขวา (ตามเข็ม): ล้อซ้ายเดินหน้า (IN3=0, IN4=1), ล้อขวาถอยหลัง (IN1=1, IN2=0)
+  digitalWrite(IN3, 0);
+  digitalWrite(IN4, 1);
+  digitalWrite(IN1, 1);
+  digitalWrite(IN2, 0);
 
   applyMotorSpeeds(speed, speed); // จ่ายไฟเต็มพิกัดสูงสุด 65535 ทั้งสองล้อ ไม่กระตุก
 
@@ -418,10 +413,10 @@ void turn_right(float target_deg = 90.0, int speed = -1) {
 
   // --- ACTIVE BRAKE & LOCK WHEELS ---
   // 1. สวนกระแสมอเตอร์สั้นๆ (Counter-torque) เพื่อหยุดแรงเฉื่อยการหมุนทันที ไม่ให้แฉลบเลยจุด
-  digitalWrite(IN1, 1);
-  digitalWrite(IN2, 0);
-  digitalWrite(IN3, 0);
-  digitalWrite(IN4, 1);
+  digitalWrite(IN3, 1);
+  digitalWrite(IN4, 0);
+  digitalWrite(IN1, 0);
+  digitalWrite(IN2, 1);
   applyMotorSpeeds(speed, speed);
   delay(BRAKE_REVERSE_MS);
 
@@ -438,11 +433,11 @@ void turn_left(float target_deg = 90.0, int speed = -1) {
   resetEncoders();
   resetYaw();
 
-  // Left backward, Right forward
-  digitalWrite(IN1, 0);
-  digitalWrite(IN2, 1);
+  // หมุนซ้าย (ทวนเข็ม): ล้อซ้ายถอยหลัง (IN3=1, IN4=0), ล้อขวาเดินหน้า (IN1=0, IN2=1)
   digitalWrite(IN3, 1);
   digitalWrite(IN4, 0);
+  digitalWrite(IN1, 0);
+  digitalWrite(IN2, 1);
 
   applyMotorSpeeds(speed, speed); // จ่ายไฟเต็มพิกัดสูงสุด 65535 ทั้งสองล้อ ไม่กระตุก
 
@@ -462,10 +457,10 @@ void turn_left(float target_deg = 90.0, int speed = -1) {
 
   // --- ACTIVE BRAKE & LOCK WHEELS ---
   // 1. สวนกระแสมอเตอร์สั้นๆ (Counter-torque) เพื่อหยุดแรงเฉื่อยการหมุนทันที
-  digitalWrite(IN1, 1);
-  digitalWrite(IN2, 0);
   digitalWrite(IN3, 0);
   digitalWrite(IN4, 1);
+  digitalWrite(IN1, 1);
+  digitalWrite(IN2, 0);
   applyMotorSpeeds(speed, speed);
   delay(BRAKE_REVERSE_MS);
 
@@ -580,30 +575,24 @@ bool mission_completed = false;
 void loop() {
   if (!mission_completed) {
     Serial.println("Place robot at Start Line. Race starting in 3 seconds...");
-    delay(1000); // 1-second delay for positioning
+    delay(500); // 1-second delay for positioning
     
     // ========================================================================
     // ตัวอย่างการวิ่งกรอบสี่เหลี่ยม 4 จุด (450 cm x 540 cm วนขวา)
     // คุณสามารถปรับแต่งขั้นตอนตามที่ต้องการได้เลยครับ:
     // ========================================================================
     
-    forward(350.0);
     
-    turn_right(450);
+    // ------------------------------------------------------------------------
+    // Leg 1: วิ่งตรง 350 cm (ความเร็วซ้าย 54000-16000=38000, ขวา 54000-0=54000, ระยะ 350 cm)
+    // ------------------------------------------------------------------------
+    Serial.println(">>> START: Forward Leg 1 (350 cm) <<<");
+    forward(54000, 54000, 0, 3000, 350);
+    turn_right(555.0);
+    // forward(54000, 54000, 16000, 0, 410); // Leg 2 (ตัวอย่าง)
     
-    forward(23000,65000,205);
-    forward(205);
 
-    turn_left(270);
-
-    forward(350.0);
-    
-    turn_right(450);
-    
-    forward(23000,65000,205);
-    forward(205);
-
-    turn_left(270);    
+      
     /*
     
     // จุดที่ 1: วิ่งตรง 450 cm
