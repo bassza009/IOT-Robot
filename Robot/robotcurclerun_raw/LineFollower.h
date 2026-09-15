@@ -19,10 +19,10 @@ struct Config {
   // Black may be higher OR lower than wood, independently on each channel.
   uint32_t countdownMs = 0;           // Start on the first sample after setup
   int lineThreshold = 450;             // Normalized: wood=0, black=1000
-  int cruisePwm = 32800;
-  int curvePwm = 32600;
-  int turnPwm = 45000;
-  int reversePwm = 27000;
+  int cruisePwm = 65500;
+  int curvePwm = 45000;
+  int turnPwm = 65500;
+  int reversePwm = 65500;
   float rightTrim = 46800.0f / 55500.0f; // Preserve the last tested wheel balance
   float steeringKp = 12600.0f;         // PWM per sensor spacing of error
   float steeringKd = 162.0f;          // PWM per spacing/second
@@ -36,7 +36,7 @@ struct Config {
   uint32_t controlGapMs = 150;
   // These encoder distances bound a LOCAL maneuver, never the lap length.
   float cmPerPulse = 3.14159265f * 6.5f / 20.0f;
-  float cornerAdvanceCm = 2.5f;        // Sensor row ~6 cm ahead of drive axle
+  float cornerAdvanceCm = 0.1f;        // Sensor row ~6 cm ahead of drive axle
   uint32_t cornerAdvanceTimeoutMs = 250;
   float intersectionAdvanceCm = 6.0f;
   uint32_t intersectionAdvanceTimeoutMs = 250;
@@ -448,6 +448,23 @@ class Controller {
       result.visible = true;
       result.allBlack = true;
       result.position = 0.0f;
+      return result;
+    }
+    // A real 90-deg corner shows up as the tracked center line PLUS a
+    // separate black group at the outer edge (the turning arm) -- two
+    // groups close in position that the ambiguity filter below would
+    // otherwise mistake for genuinely parallel/duplicate lines. Catch the
+    // corner directly from the raw mask first so it never falls into that.
+    if ((result.mask & 0x07) == 0x07 && (result.mask & 0x18) == 0) {
+      result.visible = true;
+      result.corner = -1;
+      result.position = -1.5f;
+      return result;
+    }
+    if ((result.mask & 0x1c) == 0x1c && (result.mask & 0x03) == 0) {
+      result.visible = true;
+      result.corner = 1;
+      result.position = 1.5f;
       return result;
     }
     int best = 0;
